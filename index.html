@@ -25,6 +25,7 @@
   th{background:#1e293b;color:#22d3ee;padding:10px 8px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border:1px solid #334155}
   td{padding:8px;border:1px solid #334155;vertical-align:top;color:#e2e8f0}
   td.center{text-align:center}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
   tr.critical{background:rgba(239,68,68,0.12)}
   tr.observation{background:rgba(245,158,11,0.12)}
   tr.ontrack{background:rgba(74,222,128,0.08)}
@@ -52,6 +53,13 @@
   .sync-indicator.active{display:inline-flex}
   .sync-dot{width:7px;height:7px;border-radius:50%;background:#22d3ee;animation:sync-pulse 1s ease-in-out infinite}
   @keyframes sync-pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+  .search-bar{margin-bottom:14px;max-width:340px}
+  .search-bar input{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:14px}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:9998;overflow-y:auto}
+  .modal-overlay.active{display:flex}
+  .modal-card{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:20px;max-width:1050px;width:100%;max-height:calc(100vh - 80px);overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.5)}
+  .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px}
+  .modal-header h3{color:#22d3ee;font-size:16px}
   @media(max-width:600px){.form-row{grid-template-columns:1fr}}
 </style>
 </head>
@@ -85,17 +93,26 @@
     <span style="background:#e0e7ff;color:#3730a3;">Resolved</span>
   </div>
 
+  <div class="search-bar">
+    <label>Search client history…</label>
+    <input id="client-search" placeholder="e.g. GEPDEC" oninput="onClientSearch()" onkeydown="if(event.key==='Enter'){onClientSearch(true)}">
+  </div>
+
   <table>
     <thead>
       <tr>
-        <th style="width:40px">S.No</th>
+        <th style="width:36px">S.No</th>
         <th>Client</th>
         <th>Charger Model</th>
         <th>Location</th>
-        <th style="width:28%">Current Status</th>
-        <th style="width:28%">Next Steps</th>
-        <th>kWh</th>
-        <th>Health</th>
+        <th style="width:22%">Current Status</th>
+        <th style="width:22%">Next Steps</th>
+        <th style="width:56px">kWh</th>
+        <th style="width:60px">WS Disc.</th>
+        <th style="width:56px">Hours</th>
+        <th style="width:60px">Sessions</th>
+        <th style="width:64px">Success %</th>
+        <th style="width:90px">Health</th>
         <th style="width:80px">Actions</th>
       </tr>
     </thead>
@@ -117,6 +134,12 @@
       <div><label>Units consumed (kWh)</label><input id="f-kwh" type="text" placeholder="e.g. 3624 or NA"></div>
       <div><label>Health</label><select id="f-health"><option value="On-Track">On-Track</option><option value="Under Observation">Under Observation</option><option value="Critical">Critical</option><option value="Resolved">Resolved</option></select></div>
     </div>
+    <div class="form-row">
+      <div><label>WebSocket disconnections</label><input id="f-ws" type="number" placeholder="e.g. 2"></div>
+      <div><label>Total charging duration (hrs)</label><input id="f-hours" type="number" step="0.1" placeholder="e.g. 128.5"></div>
+      <div><label>Number of sessions</label><input id="f-sessions" type="number" placeholder="e.g. 34"></div>
+      <div><label>Success rate (%)</label><input id="f-success" type="number" min="0" max="100" step="0.1" placeholder="e.g. 92.5"></div>
+    </div>
     <div style="margin-top:10px;display:flex;gap:8px;">
       <button class="btn" id="form-btn" onclick="saveEntry()">+ Add</button>
       <button class="btn btn-ghost" id="cancel-btn" onclick="cancelEdit()" style="display:none;">Cancel</button>
@@ -132,6 +155,16 @@
 
 <!-- Hidden table for clean email copy (no Actions column, email-safe colors) -->
 <div class="hidden-email-table" id="email-container"></div>
+
+<div class="modal-overlay" id="history-modal" onclick="if(event.target===this) closeHistory()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="history-title">Client History</h3>
+      <button class="btn btn-ghost" onclick="closeHistory()">Close</button>
+    </div>
+    <div id="history-body"></div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
@@ -180,11 +213,30 @@ function showSyncing(on) {
   document.getElementById('sync-indicator').classList.toggle('active', syncCount > 0);
 }
 
+function numOrNull(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return isNaN(n) ? null : n;
+}
+function numOrDash(v) {
+  return (v === '' || v === null || v === undefined) ? '—' : esc(v);
+}
+
 function rowToEntry(row) {
-  return { id: row.id, client: row.client, model: row.model || '', location: row.location || '', status: row.status || '', next: row.next_steps || '', kwh: row.kwh || '', health: row.health || 'On-Track' };
+  return {
+    id: row.id, client: row.client, model: row.model || '', location: row.location || '',
+    status: row.status || '', next: row.next_steps || '', kwh: row.kwh || '', health: row.health || 'On-Track',
+    wsDisc: row.websocket_disconnections ?? '', hours: row.total_charging_duration_hours ?? '',
+    sessions: row.num_sessions ?? '', success: row.success_rate_pct ?? ''
+  };
 }
 function entryToRow(e, week) {
-  return { week_label: week, client: e.client, model: e.model || '', location: e.location || '', status: e.status || '', next_steps: e.next || '', kwh: e.kwh || '', health: e.health || 'On-Track' };
+  return {
+    week_label: week, client: e.client, model: e.model || '', location: e.location || '',
+    status: e.status || '', next_steps: e.next || '', kwh: e.kwh || '', health: e.health || 'On-Track',
+    websocket_disconnections: numOrNull(e.wsDisc), total_charging_duration_hours: numOrNull(e.hours),
+    num_sessions: numOrNull(e.sessions), success_rate_pct: numOrNull(e.success)
+  };
 }
 
 async function seedIfEmpty() {
@@ -268,7 +320,7 @@ async function startNewWeek() {
 function render() {
   const tbody = document.getElementById('poc-tbody');
   const entries = getEntries();
-  if (!entries.length) { tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:30px;">No entries for this week.</td></tr>'; return; }
+  if (!entries.length) { tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#64748b;padding:30px;">No entries for this week.</td></tr>'; return; }
   const order = { 'Critical':0, 'Under Observation':1, 'On-Track':2, 'Resolved':3 };
   const sorted = [...entries].sort((a,b) => (order[a.health]??9) - (order[b.health]??9));
   tbody.innerHTML = sorted.map((e, idx) =>
@@ -280,10 +332,74 @@ function render() {
     '<td>' + nl2br(e.status) + '</td>' +
     '<td>' + nl2br(e.next) + '</td>' +
     '<td class="center">' + esc(e.kwh || '—') + '</td>' +
+    '<td class="num">' + numOrDash(e.wsDisc) + '</td>' +
+    '<td class="num">' + numOrDash(e.hours) + '</td>' +
+    '<td class="num">' + numOrDash(e.sessions) + '</td>' +
+    '<td class="num">' + numOrDash(e.success) + '</td>' +
     '<td class="center"><span class="health-badge ' + (healthBadge[e.health]||'') + '">' + esc(e.health) + '</span></td>' +
     '<td><div class="actions"><button class="edit-btn" onclick="editEntry(' + e.id + ')">✏️</button><button class="del-btn" onclick="deleteEntry(' + e.id + ')">×</button></div></td>' +
     '</tr>'
   ).join('');
+}
+
+// ============= CLIENT SEARCH / HISTORY =============
+function onClientSearch(force) {
+  const q = document.getElementById('client-search').value.trim();
+  if (!q) { closeHistory(); return; }
+  if (!force && q.length < 2) return;
+  showHistory(q);
+}
+
+function showHistory(query) {
+  const q = query.toLowerCase();
+  const matches = [];
+  Object.keys(allWeeks).forEach(week => {
+    (allWeeks[week] || []).forEach(e => {
+      if ((e.client || '').toLowerCase().includes(q)) matches.push(Object.assign({ week }, e));
+    });
+  });
+  matches.sort((a, b) => a.week.localeCompare(b.week) || a.id - b.id);
+
+  document.getElementById('history-title').textContent = 'Client history: "' + query + '"';
+  const body = document.getElementById('history-body');
+  if (!matches.length) {
+    body.innerHTML = '<p style="color:#94a3b8;padding:20px;text-align:center;">No history found for "' + esc(query) + '".</p>';
+  } else {
+    let html = '<table><thead><tr>' +
+      '<th style="width:130px">Week</th>' +
+      '<th>Client</th>' +
+      '<th style="width:26%">Status</th>' +
+      '<th style="width:26%">Next Steps</th>' +
+      '<th style="width:56px">kWh</th>' +
+      '<th style="width:60px">WS Disc.</th>' +
+      '<th style="width:56px">Hours</th>' +
+      '<th style="width:60px">Sessions</th>' +
+      '<th style="width:64px">Success %</th>' +
+      '<th style="width:90px">Health</th>' +
+      '</tr></thead><tbody>';
+    html += matches.map(e =>
+      '<tr class="' + (healthClass[e.health] || '') + '">' +
+      '<td>' + esc(e.week) + '</td>' +
+      '<td><strong>' + esc(e.client) + '</strong></td>' +
+      '<td>' + nl2br(e.status) + '</td>' +
+      '<td>' + nl2br(e.next) + '</td>' +
+      '<td class="center">' + esc(e.kwh || '—') + '</td>' +
+      '<td class="num">' + numOrDash(e.wsDisc) + '</td>' +
+      '<td class="num">' + numOrDash(e.hours) + '</td>' +
+      '<td class="num">' + numOrDash(e.sessions) + '</td>' +
+      '<td class="num">' + numOrDash(e.success) + '</td>' +
+      '<td class="center"><span class="health-badge ' + (healthBadge[e.health] || '') + '">' + esc(e.health) + '</span></td>' +
+      '</tr>'
+    ).join('');
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  }
+  document.getElementById('history-modal').classList.add('active');
+}
+
+function closeHistory() {
+  document.getElementById('history-modal').classList.remove('active');
+  document.getElementById('client-search').value = '';
 }
 
 async function saveEntry() {
@@ -296,7 +412,11 @@ async function saveEntry() {
     location: document.getElementById('f-location').value.trim(),
     status, next: document.getElementById('f-next').value.trim(),
     kwh: document.getElementById('f-kwh').value.trim(),
-    health: document.getElementById('f-health').value
+    health: document.getElementById('f-health').value,
+    wsDisc: document.getElementById('f-ws').value.trim(),
+    hours: document.getElementById('f-hours').value.trim(),
+    sessions: document.getElementById('f-sessions').value.trim(),
+    success: document.getElementById('f-success').value.trim()
   };
   const entries = getEntries();
   showSyncing(true);
@@ -334,6 +454,10 @@ function editEntry(id) {
   document.getElementById('f-next').value = e.next || '';
   document.getElementById('f-kwh').value = e.kwh || '';
   document.getElementById('f-health').value = e.health || 'On-Track';
+  document.getElementById('f-ws').value = e.wsDisc ?? '';
+  document.getElementById('f-hours').value = e.hours ?? '';
+  document.getElementById('f-sessions').value = e.sessions ?? '';
+  document.getElementById('f-success').value = e.success ?? '';
   document.getElementById('form-title').textContent = '✏️ Editing: ' + e.client;
   document.getElementById('form-btn').textContent = '💾 Save changes';
   document.getElementById('cancel-btn').style.display = 'inline-block';
@@ -363,7 +487,7 @@ async function deleteEntry(id) {
 }
 
 function clearForm() {
-  ['f-client','f-model','f-location','f-status','f-next','f-kwh'].forEach(id => document.getElementById(id).value = '');
+  ['f-client','f-model','f-location','f-status','f-next','f-kwh','f-ws','f-hours','f-sessions','f-success'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('f-health').value = 'On-Track';
 }
 
@@ -384,7 +508,7 @@ function buildEmailHTML() {
   html += '<p>Hi Team,</p>';
   html += '<p>Please find the POC status update for <b>' + esc(currentWeek) + '</b>.</p>';
   html += '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px;width:100%;border-color:#B0B7C3;">';
-  html += '<tr style="background:#1F2937;color:white;"><th style="padding:8px;width:35px;">S.No</th><th style="padding:8px;">Client</th><th style="padding:8px;">Charger Model</th><th style="padding:8px;">Location</th><th style="padding:8px;">Current Status</th><th style="padding:8px;">Next Steps</th><th style="padding:8px;width:60px;">kWh</th><th style="padding:8px;width:100px;">Health</th></tr>';
+  html += '<tr style="background:#1F2937;color:white;"><th style="padding:8px;width:35px;">S.No</th><th style="padding:8px;">Client</th><th style="padding:8px;">Charger Model</th><th style="padding:8px;">Location</th><th style="padding:8px;">Current Status</th><th style="padding:8px;">Next Steps</th><th style="padding:8px;width:50px;">kWh</th><th style="padding:8px;width:60px;">WS Disc.</th><th style="padding:8px;width:50px;">Hours</th><th style="padding:8px;width:60px;">Sessions</th><th style="padding:8px;width:60px;">Success %</th><th style="padding:8px;width:100px;">Health</th></tr>';
   sorted.forEach((e, i) => {
     const bg = colors[e.health] || '#FFFFFF';
     const tc = textColors[e.health] || '#1F2937';
@@ -396,6 +520,10 @@ function buildEmailHTML() {
     html += '<td style="padding:6px;vertical-align:top;">' + nl2br(e.status) + '</td>';
     html += '<td style="padding:6px;vertical-align:top;">' + nl2br(e.next) + '</td>';
     html += '<td style="padding:6px;text-align:center;vertical-align:top;">' + esc(e.kwh || '—') + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.wsDisc) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.hours) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.sessions) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.success) + '</td>';
     html += '<td style="padding:6px;text-align:center;vertical-align:top;font-weight:bold;color:' + tc + ';">' + esc(e.health) + '</td>';
     html += '</tr>';
   });

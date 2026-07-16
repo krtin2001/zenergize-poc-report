@@ -40,3 +40,14 @@ create policy "Public update access"
 create policy "Public delete access"
   on public.poc_entries for delete
   using (true);
+
+-- ============================================================
+-- Migration: weekly metrics fields
+-- Run this once against the existing poc_entries table to add
+-- the 4 new optional numeric fields.
+-- ============================================================
+alter table public.poc_entries
+  add column websocket_disconnections numeric,
+  add column total_charging_duration_hours numeric,
+  add column num_sessions numeric,
+  add column success_rate_pct numeric;
