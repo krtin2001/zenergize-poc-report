@@ -48,6 +48,10 @@
   .legend{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;font-size:11px}
   .legend span{padding:4px 10px;border-radius:4px;font-weight:600}
   .hidden-email-table{position:absolute;left:-9999px;top:0}
+  .sync-indicator{display:none;align-items:center;gap:6px;font-size:11px;color:#94a3b8;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:5px 12px;margin-bottom:12px}
+  .sync-indicator.active{display:inline-flex}
+  .sync-dot{width:7px;height:7px;border-radius:50%;background:#22d3ee;animation:sync-pulse 1s ease-in-out infinite}
+  @keyframes sync-pulse{0%,100%{opacity:1}50%{opacity:0.3}}
   @media(max-width:600px){.form-row{grid-template-columns:1fr}}
 </style>
 </head>
@@ -55,6 +59,7 @@
 <div class="container">
   <h1>⚡ POC Weekly Report</h1>
   <p class="sub">Zenergize Power Tech · Krtin Verma · Technical Program Lead</p>
+  <span class="sync-indicator" id="sync-indicator"><span class="sync-dot"></span>Syncing…</span>
 
   <div class="week-label" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
     <div>
@@ -128,12 +133,19 @@
 <!-- Hidden table for clean email copy (no Actions column, email-safe colors) -->
 <div class="hidden-email-table" id="email-container"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 
-const STORE = 'zenergize_poc_report_v2';
+const SUPABASE_URL = 'https://sqyjoddlvfenaakrckpw.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_a8HZNyQbtmL4jKwXbqin-Q_h25qJ2cB';
+const TABLE = 'poc_entries';
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 let allWeeks = {};  // { weekLabel: [entries] }
 let currentWeek = '';
 let editingId = null;
+let syncCount = 0;
 
 // Seed data from Krtin's 3-week PDF report
 const SEED_WEEKS = {
@@ -163,16 +175,49 @@ const SEED_WEEKS = {
   ]
 };
 
-function loadData() {
-  try {
-    const s = localStorage.getItem(STORE);
-    if (s) { const d = JSON.parse(s); allWeeks = d.weeks || {}; currentWeek = d.current || ''; return; }
-  } catch(e) {}
-  allWeeks = JSON.parse(JSON.stringify(SEED_WEEKS));
-  currentWeek = '30 Jun – 6 Jul 2026';
+function showSyncing(on) {
+  syncCount = Math.max(0, syncCount + (on ? 1 : -1));
+  document.getElementById('sync-indicator').classList.toggle('active', syncCount > 0);
 }
-function saveData() {
-  localStorage.setItem(STORE, JSON.stringify({ weeks: allWeeks, current: currentWeek }));
+
+function rowToEntry(row) {
+  return { id: row.id, client: row.client, model: row.model || '', location: row.location || '', status: row.status || '', next: row.next_steps || '', kwh: row.kwh || '', health: row.health || 'On-Track' };
+}
+function entryToRow(e, week) {
+  return { week_label: week, client: e.client, model: e.model || '', location: e.location || '', status: e.status || '', next_steps: e.next || '', kwh: e.kwh || '', health: e.health || 'On-Track' };
+}
+
+async function seedIfEmpty() {
+  const { count, error: countErr } = await db.from(TABLE).select('id', { count: 'exact', head: true });
+  if (countErr) throw countErr;
+  if (count > 0) return;
+  const rows = [];
+  Object.entries(SEED_WEEKS).forEach(([week, entries]) => {
+    entries.forEach(e => rows.push(entryToRow(e, week)));
+  });
+  const { error } = await db.from(TABLE).insert(rows);
+  if (error) throw error;
+}
+
+async function loadData() {
+  showSyncing(true);
+  try {
+    await seedIfEmpty();
+    const { data, error } = await db.from(TABLE).select('*').order('id', { ascending: true });
+    if (error) throw error;
+    allWeeks = {};
+    (data || []).forEach(row => {
+      if (!allWeeks[row.week_label]) allWeeks[row.week_label] = [];
+      allWeeks[row.week_label].push(rowToEntry(row));
+    });
+    const weeks = Object.keys(allWeeks).sort((a, b) => b.localeCompare(a));
+    currentWeek = weeks[0] || '';
+  } catch (e) {
+    console.error(e);
+    alert('Failed to load data from Supabase: ' + e.message);
+  } finally {
+    showSyncing(false);
+  }
 }
 function esc(s) { return s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function nl2br(s) { return esc(s).replace(/\n/g, '<br>'); }
@@ -195,20 +240,29 @@ function populateWeekDropdown() {
 function switchWeek() {
   const sel = document.getElementById('week-select');
   currentWeek = sel.value;
-  saveData(); render(); cancelEdit();
+  render(); cancelEdit();
 }
 
-function startNewWeek() {
+async function startNewWeek() {
   const label = document.getElementById('new-week-input').value.trim();
   if (!label) { alert('Enter the new week label first.'); return; }
   if (allWeeks[label]) { alert('Week "' + label + '" already exists. Pick a different label.'); return; }
-  // Copy current week's entries as starting point for the new week (status carries forward)
-  const prev = JSON.parse(JSON.stringify(getEntries()));
-  prev.forEach(e => { e.id = Date.now() + Math.random()*1000|0; e.kwh = ''; }); // reset kWh for new week
-  allWeeks[label] = prev;
-  currentWeek = label;
-  document.getElementById('new-week-input').value = '';
-  saveData(); populateWeekDropdown(); render();
+  // Copy current week's entries as starting point for the new week (status carries forward, kWh reset)
+  const rows = getEntries().map(e => entryToRow({ ...e, kwh: '' }, label));
+  showSyncing(true);
+  try {
+    const { data, error } = await db.from(TABLE).insert(rows).select();
+    if (error) throw error;
+    allWeeks[label] = data.map(rowToEntry);
+    currentWeek = label;
+    document.getElementById('new-week-input').value = '';
+    populateWeekDropdown(); render();
+  } catch (e) {
+    console.error(e);
+    alert('Failed to start new week: ' + e.message);
+  } finally {
+    showSyncing(false);
+  }
 }
 
 function render() {
@@ -232,7 +286,7 @@ function render() {
   ).join('');
 }
 
-function saveEntry() {
+async function saveEntry() {
   const client = document.getElementById('f-client').value.trim();
   const status = document.getElementById('f-status').value.trim();
   if (!client) { alert('Client name required'); return; }
@@ -245,18 +299,29 @@ function saveEntry() {
     health: document.getElementById('f-health').value
   };
   const entries = getEntries();
-  if (editingId !== null) {
-    const e = entries.find(x => x.id === editingId);
-    if (e) Object.assign(e, obj);
-    editingId = null;
-    document.getElementById('form-title').textContent = '+ Add PoC entry';
-    document.getElementById('form-btn').textContent = '+ Add';
-    document.getElementById('cancel-btn').style.display = 'none';
-  } else {
-    obj.id = Date.now();
-    entries.push(obj);
+  showSyncing(true);
+  try {
+    if (editingId !== null) {
+      const { data, error } = await db.from(TABLE).update(entryToRow(obj, currentWeek)).eq('id', editingId).select().single();
+      if (error) throw error;
+      const e = entries.find(x => x.id === editingId);
+      if (e) Object.assign(e, rowToEntry(data));
+      editingId = null;
+      document.getElementById('form-title').textContent = '+ Add PoC entry';
+      document.getElementById('form-btn').textContent = '+ Add';
+      document.getElementById('cancel-btn').style.display = 'none';
+    } else {
+      const { data, error } = await db.from(TABLE).insert(entryToRow(obj, currentWeek)).select().single();
+      if (error) throw error;
+      entries.push(rowToEntry(data));
+    }
+    setEntries(entries); clearForm(); render();
+  } catch (e) {
+    console.error(e);
+    alert('Failed to save entry: ' + e.message);
+  } finally {
+    showSyncing(false);
   }
-  setEntries(entries); clearForm(); saveData(); render();
 }
 
 function editEntry(id) {
@@ -282,9 +347,18 @@ function cancelEdit() {
   document.getElementById('cancel-btn').style.display = 'none';
 }
 
-function deleteEntry(id) {
-  if (confirm('Delete this entry?')) {
-    setEntries(getEntries().filter(x => x.id !== id)); saveData(); render();
+async function deleteEntry(id) {
+  if (!confirm('Delete this entry?')) return;
+  showSyncing(true);
+  try {
+    const { error } = await db.from(TABLE).delete().eq('id', id);
+    if (error) throw error;
+    setEntries(getEntries().filter(x => x.id !== id)); render();
+  } catch (e) {
+    console.error(e);
+    alert('Failed to delete entry: ' + e.message);
+  } finally {
+    showSyncing(false);
   }
 }
 
@@ -354,9 +428,11 @@ function copyForEmail() {
 }
 
 // Init
-loadData();
-populateWeekDropdown();
-render();
+(async function init() {
+  await loadData();
+  populateWeekDropdown();
+  render();
+})();
 
 </script>
 </body>
