@@ -24,6 +24,10 @@
   .week-label{margin-bottom:14px}
   .week-label input{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:14px;width:320px}
   .week-label label{font-size:11px;color:#94a3b8;display:block;margin-bottom:3px}
+  .month-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .month-tab{padding:6px 14px;background:#1e293b;border:1px solid #334155;border-radius:20px;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
+  .month-tab:hover{background:#334155;color:#e2e8f0}
+  .month-tab.active{background:linear-gradient(135deg,#0891b2,#059669);color:white;border-color:transparent}
   table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:12px}
   th{background:#1e293b;color:#22d3ee;padding:10px 8px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border:1px solid #334155}
   td{padding:8px;border:1px solid #334155;vertical-align:top;color:#e2e8f0}
@@ -72,14 +76,16 @@
   <p class="sub">Zenergize Power Tech · Krtin Verma · Technical Program Lead</p>
   <span class="sync-indicator" id="sync-indicator"><span class="sync-dot"></span>Syncing…</span>
 
+  <div class="month-tabs" id="month-tabs"></div>
+
   <div class="week-label" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
     <div>
       <label>Viewing week</label>
       <select id="week-select" onchange="switchWeek()" style="width:280px;font-size:14px;padding:8px 12px;"></select>
     </div>
     <div>
-      <label>New week label (to start a new week)</label>
-      <input id="new-week-input" placeholder="e.g. 7 Jul – 13 Jul 2026" style="width:280px;">
+      <label>Week starting (to start a new week)</label>
+      <input id="new-week-start" type="date" style="width:200px;">
     </div>
     <button class="btn" onclick="startNewWeek()" style="height:38px;">+ Start New Week</button>
   </div>
@@ -180,8 +186,54 @@ const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let allWeeks = {};  // { weekLabel: [entries] }
 let currentWeek = '';
+let selectedMonth = '';  // 'YYYY-MM', which month tab is active
 let editingId = null;
 let syncCount = 0;
+
+// ============= WEEK DATES =============
+// Week labels are free text like "16 Jun – 22 Jun 2026" or "14 Jul - 20 July 2026" —
+// inconsistent separators/abbreviations, so sorting them as strings puts "14 Jul" before
+// "16 Jun" (lexicographic, not chronological). Parse the last "D Month YYYY" in the label
+// (the week's end date) and sort/group by that instead.
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const MONTH_INDEX = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+function parseWeekEndDate(label) {
+  const re = /(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{4})/g;
+  let m, last = null;
+  while ((m = re.exec(label))) last = m;
+  if (!last) return null;
+  const month = MONTH_INDEX[last[2].slice(0, 3).toLowerCase()];
+  const day = parseInt(last[1], 10), year = parseInt(last[3], 10);
+  if (month === undefined || isNaN(day) || isNaN(year)) return null;
+  return new Date(year, month, day);
+}
+// Sort key for a week: parsed end date when possible, else fall back to insertion order
+// (min entry id) so unparseable labels still sort stably relative to each other.
+function weekSortValue(week) {
+  const parsed = parseWeekEndDate(week);
+  if (parsed) return parsed.getTime();
+  const entries = allWeeks[week] || [];
+  return entries.length ? Math.min(...entries.map(e => e.id)) : 0;
+}
+function weeksSorted(desc) {
+  return Object.keys(allWeeks).sort((a, b) => desc ? weekSortValue(b) - weekSortValue(a) : weekSortValue(a) - weekSortValue(b));
+}
+function monthKeyOf(week) {
+  const d = parseWeekEndDate(week);
+  if (d) return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  return 'other';
+}
+function monthLabelOf(key) {
+  if (key === 'other') return 'Other';
+  const [y, m] = key.split('-').map(Number);
+  return MONTH_SHORT[m - 1] + ' ' + y;
+}
+function fmtShortDate(d) { return d.getDate() + ' ' + MONTH_SHORT[d.getMonth()]; }
+function weekLabelFromStart(startDate) {
+  const end = new Date(startDate);
+  end.setDate(end.getDate() + 6);
+  return fmtShortDate(startDate) + ' – ' + fmtShortDate(end) + ' ' + end.getFullYear();
+}
 
 // Seed data from Krtin's 3-week PDF report
 const SEED_WEEKS = {
@@ -290,8 +342,8 @@ async function loadData() {
       if (!allWeeks[row.week_label]) allWeeks[row.week_label] = [];
       allWeeks[row.week_label].push(rowToEntry(row));
     });
-    const weeks = Object.keys(allWeeks).sort((a, b) => b.localeCompare(a));
-    currentWeek = weeks[0] || '';
+    currentWeek = weeksSorted(true)[0] || '';
+    selectedMonth = currentWeek ? monthKeyOf(currentWeek) : '';
   } catch (e) {
     console.error(e);
     showToast('Failed to load data — ' + friendlyError(e), { error: true, retry: () => init() });
@@ -308,12 +360,26 @@ const healthBadge = { 'Critical':'health-critical', 'Under Observation':'health-
 function getEntries() { return allWeeks[currentWeek] || []; }
 function setEntries(arr) { allWeeks[currentWeek] = arr; }
 
+function populateMonthTabs() {
+  const months = [...new Set(Object.keys(allWeeks).map(monthKeyOf))]
+    .sort((a, b) => a === 'other' ? 1 : b === 'other' ? -1 : b.localeCompare(a));
+  if (!months.includes(selectedMonth)) selectedMonth = months[0] || '';
+  const wrap = document.getElementById('month-tabs');
+  wrap.innerHTML = months.map(m =>
+    '<button type="button" class="month-tab' + (m === selectedMonth ? ' active' : '') + '" onclick="selectMonth(\'' + m + '\')">' + esc(monthLabelOf(m)) + '</button>'
+  ).join('');
+}
+
+function selectMonth(m) {
+  selectedMonth = m;
+  const weeksInMonth = weeksSorted(true).filter(w => monthKeyOf(w) === m);
+  if (weeksInMonth.length && !weeksInMonth.includes(currentWeek)) currentWeek = weeksInMonth[0];
+  populateMonthTabs(); populateWeekDropdown(); render(); cancelEdit();
+}
+
 function populateWeekDropdown() {
   const sel = document.getElementById('week-select');
-  const weeks = Object.keys(allWeeks).sort((a,b) => {
-    // Sort by extracting the first date-like portion — most recent first
-    return b.localeCompare(a);
-  });
+  const weeks = weeksSorted(true).filter(w => monthKeyOf(w) === selectedMonth);
   sel.innerHTML = weeks.map(w => '<option value="' + esc(w) + '"' + (w === currentWeek ? ' selected' : '') + '>' + esc(w) + (w === currentWeek ? ' (current)' : '') + '</option>').join('');
 }
 
@@ -323,10 +389,26 @@ function switchWeek() {
   render(); cancelEdit();
 }
 
+function parseDateInput(value) {
+  const [y, m, d] = value.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+// Suggest the Monday right after the current week ends, so the date field is rarely
+// left blank and weeks stay contiguous without the user doing date math.
+function prefillNewWeekDate() {
+  const input = document.getElementById('new-week-start');
+  if (!input || input.value) return;
+  const end = currentWeek ? parseWeekEndDate(currentWeek) : null;
+  const next = end ? new Date(end) : new Date();
+  next.setDate(next.getDate() + 1);
+  input.value = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0') + '-' + String(next.getDate()).padStart(2, '0');
+}
+
 async function startNewWeek() {
-  const label = document.getElementById('new-week-input').value.trim();
-  if (!label) { alert('Enter the new week label first.'); return; }
-  if (allWeeks[label]) { alert('Week "' + label + '" already exists. Pick a different label.'); return; }
+  const startVal = document.getElementById('new-week-start').value;
+  if (!startVal) { alert('Pick the week\'s start date first.'); return; }
+  const label = weekLabelFromStart(parseDateInput(startVal));
+  if (allWeeks[label]) { alert('Week "' + label + '" already exists.'); return; }
   // Copy current week's entries as starting point for the new week (status carries forward, kWh reset)
   const rows = getEntries().map(e => entryToRow({ ...e, kwh: '' }, label));
   showSyncing(true);
@@ -334,8 +416,10 @@ async function startNewWeek() {
     const { data } = await sbRetry(() => db.from(TABLE).insert(rows).select());
     allWeeks[label] = data.map(rowToEntry);
     currentWeek = label;
-    document.getElementById('new-week-input').value = '';
-    populateWeekDropdown(); render();
+    selectedMonth = monthKeyOf(label);
+    document.getElementById('new-week-start').value = '';
+    populateMonthTabs(); populateWeekDropdown(); render();
+    prefillNewWeekDate();
   } catch (e) {
     console.error(e);
     showToast('Failed to start new week — ' + friendlyError(e), { error: true, retry: () => startNewWeek() });
@@ -385,7 +469,7 @@ function showHistory(query) {
       if ((e.client || '').toLowerCase().startsWith(q)) matches.push(Object.assign({ week }, e));
     });
   });
-  matches.sort((a, b) => a.week.localeCompare(b.week) || a.id - b.id);
+  matches.sort((a, b) => weekSortValue(a.week) - weekSortValue(b.week) || a.id - b.id);
 
   document.getElementById('history-title').textContent = 'Client history: "' + query + '"';
   const body = document.getElementById('history-body');
@@ -606,8 +690,10 @@ function copyForEmail() {
 // Init
 async function init() {
   await loadData();
+  populateMonthTabs();
   populateWeekDropdown();
   render();
+  prefillNewWeekDate();
 }
 init();
 
