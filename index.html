@@ -17,7 +17,10 @@
   .btn-danger{background:#991b1b}
   .btn-email{background:linear-gradient(135deg,#7c3aed,#db2777);font-size:14px;padding:12px 24px}
   .btn-email:hover{box-shadow:0 4px 12px rgba(124,58,237,0.4)}
-  .toast{position:fixed;top:20px;right:20px;background:#059669;color:white;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:9999;display:none;box-shadow:0 4px 16px rgba(0,0,0,0.3)}
+  .toast{position:fixed;top:20px;right:20px;background:#059669;color:white;padding:14px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:9999;display:none;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,0.3);max-width:400px}
+  .toast.error{background:#b91c1c}
+  .toast button.toast-retry{padding:5px 12px;font-size:12px;border:1px solid rgba(255,255,255,0.5);border-radius:6px;background:transparent;color:white;cursor:pointer;flex-shrink:0}
+  .toast button.toast-retry:hover{background:rgba(255,255,255,0.15)}
   .week-label{margin-bottom:14px}
   .week-label input{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:8px 12px;color:#e2e8f0;font-size:14px;width:320px}
   .week-label label{font-size:11px;color:#94a3b8;display:block;margin-bottom:3px}
@@ -213,6 +216,34 @@ function showSyncing(on) {
   document.getElementById('sync-indicator').classList.toggle('active', syncCount > 0);
 }
 
+// ============= NETWORK RESILIENCE =============
+// Safari (and flaky wifi/VPN) can surface brief fetch hiccups as "TypeError: Load failed".
+// These are transient — retrying the same request a couple of times almost always succeeds.
+function isTransientError(e) {
+  const msg = String((e && e.message) || e || '');
+  return /load failed|failed to fetch|network ?error|network request failed|timeout|ETIMEDOUT|ECONNRESET/i.test(msg);
+}
+function friendlyError(e) {
+  if (isTransientError(e)) return 'network hiccup — check your connection';
+  return String((e && e.message) || e || 'Unknown error');
+}
+// Runs a Supabase query, retrying with backoff if the failure looks transient.
+async function sbRetry(queryFn, attempts = 3, delay = 500) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const result = await queryFn();
+      if (result && result.error) throw result.error;
+      return result;
+    } catch (e) {
+      lastErr = e;
+      if (!isTransientError(e) || i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
+    }
+  }
+  throw lastErr;
+}
+
 function numOrNull(v) {
   if (v === '' || v === null || v === undefined) return null;
   const n = Number(v);
@@ -240,23 +271,20 @@ function entryToRow(e, week) {
 }
 
 async function seedIfEmpty() {
-  const { count, error: countErr } = await db.from(TABLE).select('id', { count: 'exact', head: true });
-  if (countErr) throw countErr;
+  const { count } = await sbRetry(() => db.from(TABLE).select('id', { count: 'exact', head: true }));
   if (count > 0) return;
   const rows = [];
   Object.entries(SEED_WEEKS).forEach(([week, entries]) => {
     entries.forEach(e => rows.push(entryToRow(e, week)));
   });
-  const { error } = await db.from(TABLE).insert(rows);
-  if (error) throw error;
+  await sbRetry(() => db.from(TABLE).insert(rows));
 }
 
 async function loadData() {
   showSyncing(true);
   try {
     await seedIfEmpty();
-    const { data, error } = await db.from(TABLE).select('*').order('id', { ascending: true });
-    if (error) throw error;
+    const { data } = await sbRetry(() => db.from(TABLE).select('*').order('id', { ascending: true }));
     allWeeks = {};
     (data || []).forEach(row => {
       if (!allWeeks[row.week_label]) allWeeks[row.week_label] = [];
@@ -266,7 +294,7 @@ async function loadData() {
     currentWeek = weeks[0] || '';
   } catch (e) {
     console.error(e);
-    alert('Failed to load data from Supabase: ' + e.message);
+    showToast('Failed to load data — ' + friendlyError(e), { error: true, retry: () => init() });
   } finally {
     showSyncing(false);
   }
@@ -303,15 +331,14 @@ async function startNewWeek() {
   const rows = getEntries().map(e => entryToRow({ ...e, kwh: '' }, label));
   showSyncing(true);
   try {
-    const { data, error } = await db.from(TABLE).insert(rows).select();
-    if (error) throw error;
+    const { data } = await sbRetry(() => db.from(TABLE).insert(rows).select());
     allWeeks[label] = data.map(rowToEntry);
     currentWeek = label;
     document.getElementById('new-week-input').value = '';
     populateWeekDropdown(); render();
   } catch (e) {
     console.error(e);
-    alert('Failed to start new week: ' + e.message);
+    showToast('Failed to start new week — ' + friendlyError(e), { error: true, retry: () => startNewWeek() });
   } finally {
     showSyncing(false);
   }
@@ -355,7 +382,7 @@ function showHistory(query) {
   const matches = [];
   Object.keys(allWeeks).forEach(week => {
     (allWeeks[week] || []).forEach(e => {
-      if ((e.client || '').toLowerCase().includes(q)) matches.push(Object.assign({ week }, e));
+      if ((e.client || '').toLowerCase().startsWith(q)) matches.push(Object.assign({ week }, e));
     });
   });
   matches.sort((a, b) => a.week.localeCompare(b.week) || a.id - b.id);
@@ -419,11 +446,15 @@ async function saveEntry() {
     success: document.getElementById('f-success').value.trim()
   };
   const entries = getEntries();
+  const wasEditing = editingId !== null;
+  const btn = document.getElementById('form-btn');
+  const savedBtnText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = wasEditing ? 'Saving…' : 'Adding…';
   showSyncing(true);
   try {
-    if (editingId !== null) {
-      const { data, error } = await db.from(TABLE).update(entryToRow(obj, currentWeek)).eq('id', editingId).select().single();
-      if (error) throw error;
+    if (wasEditing) {
+      const { data } = await sbRetry(() => db.from(TABLE).update(entryToRow(obj, currentWeek)).eq('id', editingId).select().single());
       const e = entries.find(x => x.id === editingId);
       if (e) Object.assign(e, rowToEntry(data));
       editingId = null;
@@ -431,15 +462,18 @@ async function saveEntry() {
       document.getElementById('form-btn').textContent = '+ Add';
       document.getElementById('cancel-btn').style.display = 'none';
     } else {
-      const { data, error } = await db.from(TABLE).insert(entryToRow(obj, currentWeek)).select().single();
-      if (error) throw error;
+      const { data } = await sbRetry(() => db.from(TABLE).insert(entryToRow(obj, currentWeek)).select().single());
       entries.push(rowToEntry(data));
     }
     setEntries(entries); clearForm(); render();
+    showToast('✅ Saved');
   } catch (e) {
     console.error(e);
-    alert('Failed to save entry: ' + e.message);
+    btn.textContent = savedBtnText;
+    // Keep the form filled in and stay in edit mode so nothing typed is lost — just let them retry.
+    showToast('Couldn\'t save — ' + friendlyError(e), { error: true, retry: saveEntry });
   } finally {
+    btn.disabled = false;
     showSyncing(false);
   }
 }
@@ -475,12 +509,11 @@ async function deleteEntry(id) {
   if (!confirm('Delete this entry?')) return;
   showSyncing(true);
   try {
-    const { error } = await db.from(TABLE).delete().eq('id', id);
-    if (error) throw error;
+    await sbRetry(() => db.from(TABLE).delete().eq('id', id));
     setEntries(getEntries().filter(x => x.id !== id)); render();
   } catch (e) {
     console.error(e);
-    alert('Failed to delete entry: ' + e.message);
+    showToast('Couldn\'t delete — ' + friendlyError(e), { error: true, retry: () => deleteEntry(id) });
   } finally {
     showSyncing(false);
   }
@@ -491,9 +524,24 @@ function clearForm() {
   document.getElementById('f-health').value = 'On-Track';
 }
 
-function showToast(msg) {
-  const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block';
-  setTimeout(() => t.style.display = 'none', 3000);
+function showToast(msg, opts) {
+  opts = opts || {};
+  const t = document.getElementById('toast');
+  t.classList.toggle('error', !!opts.error);
+  t.innerHTML = '';
+  const span = document.createElement('span');
+  span.textContent = msg;
+  t.appendChild(span);
+  if (opts.retry) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-retry';
+    btn.textContent = 'Retry';
+    btn.onclick = () => { t.style.display = 'none'; opts.retry(); };
+    t.appendChild(btn);
+  }
+  t.style.display = 'flex';
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(() => t.style.display = 'none', opts.error ? 7000 : 3000);
 }
 
 // ============= EMAIL COPY =============
@@ -556,11 +604,12 @@ function copyForEmail() {
 }
 
 // Init
-(async function init() {
+async function init() {
   await loadData();
   populateWeekDropdown();
   render();
-})();
+}
+init();
 
 </script>
 </body>
