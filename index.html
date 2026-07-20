@@ -28,8 +28,9 @@
   .month-tab{padding:6px 14px;background:#1e293b;border:1px solid #334155;border-radius:20px;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s}
   .month-tab:hover{background:#334155;color:#e2e8f0}
   .month-tab.active{background:linear-gradient(135deg,#0891b2,#059669);color:white;border-color:transparent}
-  table{width:100%;border-collapse:collapse;margin-bottom:16px;font-size:12px}
-  th{background:#1e293b;color:#22d3ee;padding:10px 8px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border:1px solid #334155}
+  .table-wrap{overflow-x:auto;margin-bottom:16px;border-radius:8px}
+  table{width:100%;min-width:1500px;border-collapse:collapse;font-size:12px}
+  th{background:#1e293b;color:#22d3ee;padding:10px 8px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border:1px solid #334155;white-space:nowrap}
   td{padding:8px;border:1px solid #334155;vertical-align:top;color:#e2e8f0}
   td.center{text-align:center}
   td.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -107,15 +108,16 @@
     <input id="client-search" placeholder="e.g. GEPDEC" oninput="onClientSearch()" onkeydown="if(event.key==='Enter'){onClientSearch(true)}">
   </div>
 
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
         <th style="width:36px">S.No</th>
-        <th>Client</th>
-        <th>Charger Model</th>
-        <th>Location</th>
-        <th style="width:22%">Current Status</th>
-        <th style="width:22%">Next Steps</th>
+        <th style="width:130px">Client</th>
+        <th style="width:150px">Charger Model</th>
+        <th style="width:110px">Location</th>
+        <th style="width:280px">Current Status</th>
+        <th style="width:280px">Next Steps</th>
         <th style="width:56px">kWh</th>
         <th style="width:60px">WS Disc.</th>
         <th style="width:56px">Hours</th>
@@ -124,7 +126,7 @@
         <th style="width:64px">Success %</th>
         <th style="width:70px">Failed Ctrl</th>
         <th style="width:76px">Failed Unctrl</th>
-        <th style="width:140px">Fault Reasons</th>
+        <th style="width:160px">Fault Reasons</th>
         <th style="width:70px">Error</th>
         <th style="width:90px">Health</th>
         <th style="width:80px">Actions</th>
@@ -132,6 +134,7 @@
     </thead>
     <tbody id="poc-tbody"></tbody>
   </table>
+  </div>
 
   <div class="form-card">
     <h4 style="color:#22d3ee;font-size:13px;margin-bottom:10px;" id="form-title">+ Add PoC entry</h4>
@@ -497,11 +500,11 @@ function showHistory(query) {
   if (!matches.length) {
     body.innerHTML = '<p style="color:#94a3b8;padding:20px;text-align:center;">No history found for "' + esc(query) + '".</p>';
   } else {
-    let html = '<table><thead><tr>' +
+    let html = '<div class="table-wrap"><table><thead><tr>' +
       '<th style="width:130px">Week</th>' +
-      '<th>Client</th>' +
-      '<th style="width:26%">Status</th>' +
-      '<th style="width:26%">Next Steps</th>' +
+      '<th style="width:110px">Client</th>' +
+      '<th style="width:260px">Status</th>' +
+      '<th style="width:260px">Next Steps</th>' +
       '<th style="width:56px">kWh</th>' +
       '<th style="width:60px">WS Disc.</th>' +
       '<th style="width:56px">Hours</th>' +
@@ -533,7 +536,7 @@ function showHistory(query) {
       '<td class="center"><span class="health-badge ' + (healthBadge[e.health] || '') + '">' + esc(e.health) + '</span></td>' +
       '</tr>'
     ).join('');
-    html += '</tbody></table>';
+    html += '</tbody></table></div>';
     body.innerHTML = html;
   }
   document.getElementById('history-modal').classList.add('active');
