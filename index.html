@@ -120,7 +120,12 @@
         <th style="width:60px">WS Disc.</th>
         <th style="width:56px">Hours</th>
         <th style="width:60px">Sessions</th>
+        <th style="width:64px">Successful</th>
         <th style="width:64px">Success %</th>
+        <th style="width:70px">Failed Ctrl</th>
+        <th style="width:76px">Failed Unctrl</th>
+        <th style="width:140px">Fault Reasons</th>
+        <th style="width:70px">Error</th>
         <th style="width:90px">Health</th>
         <th style="width:80px">Actions</th>
       </tr>
@@ -147,7 +152,14 @@
       <div><label>WebSocket disconnections</label><input id="f-ws" type="number" placeholder="e.g. 2"></div>
       <div><label>Total charging duration (hrs)</label><input id="f-hours" type="number" step="0.1" placeholder="e.g. 128.5"></div>
       <div><label>Number of sessions</label><input id="f-sessions" type="number" placeholder="e.g. 34"></div>
+      <div><label>Successful sessions</label><input id="f-successful" type="number" placeholder="e.g. 9"></div>
       <div><label>Success rate (%)</label><input id="f-success" type="number" min="0" max="100" step="0.1" placeholder="e.g. 92.5"></div>
+    </div>
+    <div class="form-row">
+      <div><label>Failed — controllable</label><input id="f-failed-ctrl" type="number" placeholder="e.g. 34"></div>
+      <div><label>Failed — uncontrollable</label><input id="f-failed-unctrl" type="number" placeholder="e.g. 10"></div>
+      <div><label>Fault reasons</label><input id="f-fault-reasons" placeholder="e.g. CAN A Failed: 33, Thermal Fault: 10"></div>
+      <div><label>Error</label><input id="f-error" placeholder="e.g. — or error code"></div>
     </div>
     <div style="margin-top:10px;display:flex;gap:8px;">
       <button class="btn" id="form-btn" onclick="saveEntry()">+ Add</button>
@@ -310,7 +322,9 @@ function rowToEntry(row) {
     id: row.id, client: row.client, model: row.model || '', location: row.location || '',
     status: row.status || '', next: row.next_steps || '', kwh: row.kwh || '', health: row.health || 'On-Track',
     wsDisc: row.websocket_disconnections ?? '', hours: row.total_charging_duration_hours ?? '',
-    sessions: row.num_sessions ?? '', success: row.success_rate_pct ?? ''
+    sessions: row.num_sessions ?? '', success: row.success_rate_pct ?? '',
+    successful: row.successful_sessions ?? '', failedCtrl: row.failed_ctrl ?? '', failedUnctrl: row.failed_unctrl ?? '',
+    faultReasons: row.fault_reasons || '', error: row.error || ''
   };
 }
 function entryToRow(e, week) {
@@ -318,7 +332,9 @@ function entryToRow(e, week) {
     week_label: week, client: e.client, model: e.model || '', location: e.location || '',
     status: e.status || '', next_steps: e.next || '', kwh: e.kwh || '', health: e.health || 'On-Track',
     websocket_disconnections: numOrNull(e.wsDisc), total_charging_duration_hours: numOrNull(e.hours),
-    num_sessions: numOrNull(e.sessions), success_rate_pct: numOrNull(e.success)
+    num_sessions: numOrNull(e.sessions), success_rate_pct: numOrNull(e.success),
+    successful_sessions: numOrNull(e.successful), failed_ctrl: numOrNull(e.failedCtrl), failed_unctrl: numOrNull(e.failedUnctrl),
+    fault_reasons: e.faultReasons || '', error: e.error || ''
   };
 }
 
@@ -431,7 +447,7 @@ async function startNewWeek() {
 function render() {
   const tbody = document.getElementById('poc-tbody');
   const entries = getEntries();
-  if (!entries.length) { tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#64748b;padding:30px;">No entries for this week.</td></tr>'; return; }
+  if (!entries.length) { tbody.innerHTML = '<tr><td colspan="18" style="text-align:center;color:#64748b;padding:30px;">No entries for this week.</td></tr>'; return; }
   const order = { 'Critical':0, 'Under Observation':1, 'On-Track':2, 'Resolved':3 };
   const sorted = [...entries].sort((a,b) => (order[a.health]??9) - (order[b.health]??9));
   tbody.innerHTML = sorted.map((e, idx) =>
@@ -446,7 +462,12 @@ function render() {
     '<td class="num">' + numOrDash(e.wsDisc) + '</td>' +
     '<td class="num">' + numOrDash(e.hours) + '</td>' +
     '<td class="num">' + numOrDash(e.sessions) + '</td>' +
+    '<td class="num">' + numOrDash(e.successful) + '</td>' +
     '<td class="num">' + numOrDash(e.success) + '</td>' +
+    '<td class="num">' + numOrDash(e.failedCtrl) + '</td>' +
+    '<td class="num">' + numOrDash(e.failedUnctrl) + '</td>' +
+    '<td>' + (e.faultReasons ? esc(e.faultReasons) : '—') + '</td>' +
+    '<td class="center">' + (e.error ? esc(e.error) : '—') + '</td>' +
     '<td class="center"><span class="health-badge ' + (healthBadge[e.health]||'') + '">' + esc(e.health) + '</span></td>' +
     '<td><div class="actions"><button class="edit-btn" onclick="editEntry(' + e.id + ')">✏️</button><button class="del-btn" onclick="deleteEntry(' + e.id + ')">×</button></div></td>' +
     '</tr>'
@@ -485,7 +506,12 @@ function showHistory(query) {
       '<th style="width:60px">WS Disc.</th>' +
       '<th style="width:56px">Hours</th>' +
       '<th style="width:60px">Sessions</th>' +
+      '<th style="width:64px">Successful</th>' +
       '<th style="width:64px">Success %</th>' +
+      '<th style="width:70px">Failed Ctrl</th>' +
+      '<th style="width:76px">Failed Unctrl</th>' +
+      '<th style="width:140px">Fault Reasons</th>' +
+      '<th style="width:70px">Error</th>' +
       '<th style="width:90px">Health</th>' +
       '</tr></thead><tbody>';
     html += matches.map(e =>
@@ -498,7 +524,12 @@ function showHistory(query) {
       '<td class="num">' + numOrDash(e.wsDisc) + '</td>' +
       '<td class="num">' + numOrDash(e.hours) + '</td>' +
       '<td class="num">' + numOrDash(e.sessions) + '</td>' +
+      '<td class="num">' + numOrDash(e.successful) + '</td>' +
       '<td class="num">' + numOrDash(e.success) + '</td>' +
+      '<td class="num">' + numOrDash(e.failedCtrl) + '</td>' +
+      '<td class="num">' + numOrDash(e.failedUnctrl) + '</td>' +
+      '<td>' + (e.faultReasons ? esc(e.faultReasons) : '—') + '</td>' +
+      '<td class="center">' + (e.error ? esc(e.error) : '—') + '</td>' +
       '<td class="center"><span class="health-badge ' + (healthBadge[e.health] || '') + '">' + esc(e.health) + '</span></td>' +
       '</tr>'
     ).join('');
@@ -527,7 +558,12 @@ async function saveEntry() {
     wsDisc: document.getElementById('f-ws').value.trim(),
     hours: document.getElementById('f-hours').value.trim(),
     sessions: document.getElementById('f-sessions').value.trim(),
-    success: document.getElementById('f-success').value.trim()
+    successful: document.getElementById('f-successful').value.trim(),
+    success: document.getElementById('f-success').value.trim(),
+    failedCtrl: document.getElementById('f-failed-ctrl').value.trim(),
+    failedUnctrl: document.getElementById('f-failed-unctrl').value.trim(),
+    faultReasons: document.getElementById('f-fault-reasons').value.trim(),
+    error: document.getElementById('f-error').value.trim()
   };
   const entries = getEntries();
   const wasEditing = editingId !== null;
@@ -575,7 +611,12 @@ function editEntry(id) {
   document.getElementById('f-ws').value = e.wsDisc ?? '';
   document.getElementById('f-hours').value = e.hours ?? '';
   document.getElementById('f-sessions').value = e.sessions ?? '';
+  document.getElementById('f-successful').value = e.successful ?? '';
   document.getElementById('f-success').value = e.success ?? '';
+  document.getElementById('f-failed-ctrl').value = e.failedCtrl ?? '';
+  document.getElementById('f-failed-unctrl').value = e.failedUnctrl ?? '';
+  document.getElementById('f-fault-reasons').value = e.faultReasons ?? '';
+  document.getElementById('f-error').value = e.error ?? '';
   document.getElementById('form-title').textContent = '✏️ Editing: ' + e.client;
   document.getElementById('form-btn').textContent = '💾 Save changes';
   document.getElementById('cancel-btn').style.display = 'inline-block';
@@ -604,7 +645,7 @@ async function deleteEntry(id) {
 }
 
 function clearForm() {
-  ['f-client','f-model','f-location','f-status','f-next','f-kwh','f-ws','f-hours','f-sessions','f-success'].forEach(id => document.getElementById(id).value = '');
+  ['f-client','f-model','f-location','f-status','f-next','f-kwh','f-ws','f-hours','f-sessions','f-successful','f-success','f-failed-ctrl','f-failed-unctrl','f-fault-reasons','f-error'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('f-health').value = 'On-Track';
 }
 
@@ -640,7 +681,7 @@ function buildEmailHTML() {
   html += '<p>Hi Team,</p>';
   html += '<p>Please find the POC status update for <b>' + esc(currentWeek) + '</b>.</p>';
   html += '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px;width:100%;border-color:#B0B7C3;">';
-  html += '<tr style="background:#1F2937;color:white;"><th style="padding:8px;width:35px;">S.No</th><th style="padding:8px;">Client</th><th style="padding:8px;">Charger Model</th><th style="padding:8px;">Location</th><th style="padding:8px;">Current Status</th><th style="padding:8px;">Next Steps</th><th style="padding:8px;width:50px;">kWh</th><th style="padding:8px;width:60px;">WS Disc.</th><th style="padding:8px;width:50px;">Hours</th><th style="padding:8px;width:60px;">Sessions</th><th style="padding:8px;width:60px;">Success %</th><th style="padding:8px;width:100px;">Health</th></tr>';
+  html += '<tr style="background:#1F2937;color:white;"><th style="padding:8px;width:35px;">S.No</th><th style="padding:8px;">Client</th><th style="padding:8px;">Charger Model</th><th style="padding:8px;">Location</th><th style="padding:8px;">Current Status</th><th style="padding:8px;">Next Steps</th><th style="padding:8px;width:50px;">kWh</th><th style="padding:8px;width:60px;">WS Disc.</th><th style="padding:8px;width:50px;">Hours</th><th style="padding:8px;width:60px;">Sessions</th><th style="padding:8px;width:60px;">Successful</th><th style="padding:8px;width:60px;">Success %</th><th style="padding:8px;width:60px;">Failed Ctrl</th><th style="padding:8px;width:70px;">Failed Unctrl</th><th style="padding:8px;width:140px;">Fault Reasons</th><th style="padding:8px;width:60px;">Error</th><th style="padding:8px;width:100px;">Health</th></tr>';
   sorted.forEach((e, i) => {
     const bg = colors[e.health] || '#FFFFFF';
     const tc = textColors[e.health] || '#1F2937';
@@ -655,7 +696,12 @@ function buildEmailHTML() {
     html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.wsDisc) + '</td>';
     html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.hours) + '</td>';
     html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.sessions) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.successful) + '</td>';
     html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.success) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.failedCtrl) + '</td>';
+    html += '<td style="padding:6px;text-align:right;vertical-align:top;">' + numOrDash(e.failedUnctrl) + '</td>';
+    html += '<td style="padding:6px;vertical-align:top;">' + (e.faultReasons ? esc(e.faultReasons) : '—') + '</td>';
+    html += '<td style="padding:6px;text-align:center;vertical-align:top;">' + (e.error ? esc(e.error) : '—') + '</td>';
     html += '<td style="padding:6px;text-align:center;vertical-align:top;font-weight:bold;color:' + tc + ';">' + esc(e.health) + '</td>';
     html += '</tr>';
   });
